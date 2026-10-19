@@ -1,0 +1,23 @@
+# docker compose -f container/docker-compose.yml up -d --build
+services:
+  gpumon:
+    build:
+      context: ..
+      dockerfile: container/Dockerfile
+    image: gpumon
+    container_name: gpumon
+    restart: unless-stopped
+    pid: host                       # see host PIDs so processes can be named (Linux hosts)
+    ports:
+      - "9102:9102"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro   # optional: shows container names instead of ids
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      GPUMON_INTERVAL_MS: "1000"

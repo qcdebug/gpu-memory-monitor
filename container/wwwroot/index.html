@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GpuMon</title>
+<style>
+  :root { --bg:#f3f4f7; --card:#fff; --ink:#1d1f27; --mute:#6a6f7d; --line:#dfe2e8; --accent:#2e8b57; --warn:#c85a00; --bad:#b3261e; --track:#e3e5ea; --head:#2b2d42; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14151a; --card:#1d1f27; --ink:#e7e9ee; --mute:#9096a5; --line:#2c2f3a; --accent:#4cc38a; --warn:#ff9a3d; --bad:#ff6b61; --track:#2a2d38; --head:#0f1015; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { background:var(--head); color:#fff; padding:10px 16px; display:flex; gap:16px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header .st { color:#b8bdcc; font-size:12px; }
+  main { padding:12px; display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); }
+  @media (max-width: 620px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; min-width:0; }
+  .card h2 { margin:0; padding:9px 14px; font-size:14px; background:var(--head); color:#fff; display:flex; justify-content:space-between; gap:8px; }
+  .sec { padding:10px 14px; border-top:1px solid var(--line); }
+  .bar { height:20px; background:var(--track); border-radius:4px; display:flex; overflow:hidden; margin:6px 0; }
+  .bar i { display:block; height:100%; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 14px; font-size:12px; color:var(--mute); }
+  .legend span::before { content:""; display:inline-block; width:9px; height:9px; margin-right:5px; border-radius:2px; background:var(--c); }
+  .link { font-weight:600; margin-top:6px; }
+  .link.warn { color:var(--warn); }
+  .row { display:grid; grid-template-columns: minmax(130px, 1.1fr) 90px minmax(100px, 2fr); gap:8px; align-items:center; padding:3px 0; border-bottom:1px solid var(--line); }
+  .row:last-child { border-bottom:0; }
+  .row .lbl { color:var(--mute); font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row b { text-align:right; font-variant-numeric: tabular-nums; }
+  .row canvas { width:100%; height:26px; background:var(--track); border-radius:3px; display:block; }
+  .txt { display:flex; justify-content:space-between; padding:3px 0; }
+  .txt .warn { color:var(--warn); font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; color:var(--mute); font-weight:600; cursor:pointer; user-select:none; padding:4px 6px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:3px 6px; border-bottom:1px solid var(--line); font-variant-numeric: tabular-nums; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  td.n, th.n { text-align:right; }
+  .scroll { overflow:auto; max-height:340px; }
+  .note { color:var(--mute); font-size:12.5px; padding:6px 0; }
+  details summary { cursor:pointer; color:var(--mute); font-size:12.5px; }
+  details table td:first-child { color:var(--mute); }
+</style>
+</head>
+<body>
+<header>
+  <h1>GpuMon</h1>
+  <span class="st" id="status">connecting&hellip;</span>
+  <span class="st" style="margin-left:auto"><a href="metrics" style="color:#b8bdcc">/metrics</a></span>
+</header>
+<main id="main"></main>
+<script>
+"use strict";
+const MAXH = 300;
+const hist = {};                 // "gpu|key" -> number[]
+const cards = {};                // gpu index -> element refs
+const sortState = {};            // gpu index -> {col, desc}
+const PAL = ["#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd","#8c564b","#e377c2","#17becf","#bcbd22","#393b79","#e7ba52","#63939a"];
+const colorOf = {}; let nextColor = 0;
+const color = n => colorOf[n] ?? (colorOf[n] = PAL[nextColor++ % PAL.length]);
+
+function fmt(v, f) {
+  if (v == null) return "n/a";
+  switch (f) {
+    case "N0": return Math.round(v).toLocaleString();
+    case "N1": return v.toLocaleString(undefined, {minimumFractionDigits:1, maximumFractionDigits:1});
+    case "0.0": return v.toFixed(1);
+    default: return String(Math.round(v));
+  }
+}
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function build(g, defs) {
+  const el = document.createElement("section");
+  el.className = "card";
+  el.innerHTML = `<h2><span>GPU ${g.index}: ${esc(g.name)}</span><span class="mem"></span></h2>
+    <div class="sec"><div class="bar"></div><div class="legend"></div><div class="link"></div></div>
+    <div class="sec sensors"></div>
+    <div class="sec"><div class="procnote note"></div><div class="scroll"><table><thead></thead><tbody></tbody></table></div></div>
+    <div class="sec"><details><summary>GPU details</summary><table><tbody></tbody></table></details></div>`;
+  document.getElementById("main").appendChild(el);
+  const c = { el, rows: {}, txt: {}, mem: el.querySelector(".mem"), bar: el.querySelector(".bar"), legend: el.querySelector(".legend"),
+              link: el.querySelector(".link"), sensors: el.querySelector(".sensors"), note: el.querySelector(".procnote"),
+              thead: el.querySelector("thead"), tbody: el.querySelector(".scroll tbody"), det: el.querySelector("details tbody") };
+  c.det.innerHTML = g.details.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+  sortState[g.index] = { col: "memMb", desc: true };
+  const cols = [["name","Process"],["pid","PID",1],["container","Container"],["types","Type"],["memMb","VRAM MB",1],["sm","SM %",1],["mem","Mem %",1],["enc","Enc %",1],["dec","Dec %",1],["cmd","Command"]];
+  c.cols = cols;
+  c.thead.innerHTML = "<tr>" + cols.map(([k, t, n]) => `<th data-k="${k}" class="${n ? "n" : ""}">${t}</th>`).join("") + "</tr>";
+  c.thead.onclick = e => { const k = e.target.dataset?.k; if (!k) return; const s = sortState[g.index]; if (s.col === k) s.desc = !s.desc; else { s.col = k; s.desc = k !== "name" && k !== "container" && k !== "cmd" && k !== "types"; } renderProcs(g, c); };
+  cards[g.index] = c;
+  return c;
+}
+
+function sparkline(canvas, vals, max) {
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+  const x = canvas.getContext("2d"); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, w, h);
+  if (vals.length < 2) return;
+  const step = w / (MAXH - 1);
+  x.beginPath();
+  vals.forEach((v, i) => { const px = w - (vals.length - 1 - i) * step, py = h - 2 - Math.min(1, v / max) * (h - 4); i ? x.lineTo(px, py) : x.moveTo(px, py); });
+  const css = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+  x.strokeStyle = css; x.lineWidth = 1.5; x.stroke();
+  x.lineTo(w, h); x.lineTo(w - (vals.length - 1) * step, h); x.closePath(); x.globalAlpha = .18; x.fillStyle = css; x.fill(); x.globalAlpha = 1;
+}
+
+function renderProcs(g, c) {
+  const s = sortState[g.index];
+  const rows = [...g.procs].sort((a, b) => {
+    let x = a[s.col], y = b[s.col];
+    if (typeof x === "string" || typeof y === "string") { x = String(x ?? "").toLowerCase(); y = String(y ?? "").toLowerCase(); return s.desc ? y.localeCompare(x) : x.localeCompare(y); }
+    x = x ?? -1; y = y ?? -1; return s.desc ? y - x : x - y;
+  });
+  c.tbody.innerHTML = rows.map(p => `<tr><td><i style="display:inline-block;width:8px;height:8px;margin-right:6px;border-radius:2px;background:${color(p.name)}"></i>${esc(p.name)}</td>
+    <td class="n">${p.pid}</td><td>${esc(p.container)}</td><td>${esc(p.types)}</td><td class="n">${p.memMb ? p.memMb.toLocaleString() : ""}</td>
+    <td class="n">${p.sm ?? ""}</td><td class="n">${p.mem ?? ""}</td><td class="n">${p.enc ?? ""}</td><td class="n">${p.dec ?? ""}</td><td title="${esc(p.cmd)}">${esc(p.cmd)}</td></tr>`).join("");
+  if (!g.procs.length)
+    c.note.textContent = "The driver reports no processes on this GPU. If you expected some: on a Linux host start the container with --pid=host; on Docker Desktop / WSL2 the Linux VM cannot see Windows processes.";
+  else if (g.procs.every(p => !p.memMb))
+    c.note.textContent = "Processes are listed with their GPU load, but the driver reports no per-process memory here (typical for WDDM and WSL2). On a Windows host via WSL2 these are Windows PIDs and cannot be named; use the GpuMon Windows app for names and VRAM per process.";
+  else c.note.textContent = "";
+}
+
+function render(s) {
+  document.getElementById("status").textContent = `${s.nvml}   |   sampled ${s.time ? new Date(s.time).toLocaleTimeString() : "-"} in ${s.collectMs} ms` +
+    (s.dockerNames ? "   |   container names: on" : "   |   container names: off (mount docker.sock to enable)");
+  for (const g of s.gpus) {
+    const c = cards[g.index] ?? build(g, s.defs);
+    const v = g.v;
+    for (const k in v) { const a = hist[g.index + "|" + k] ??= []; a.push(v[k]); if (a.length > MAXH) a.shift(); }
+
+    // memory bar segmented by process name
+    const total = v["mem.total"] || 1, used = v["mem.used"] || 0;
+    const by = {};
+    for (const p of g.procs) if (p.memMb) by[p.name] = (by[p.name] || 0) + p.memMb;
+    const top = Object.entries(by).sort((a, b) => b[1] - a[1]);
+    const attributed = top.reduce((t, [, m]) => t + m, 0);
+    const segs = top.map(([n, m]) => ({ n, m, c: color(n) }));
+    segs.push({ n: top.length ? "driver / other" : "in use", m: Math.max(0, used - attributed), c: "#5b5b66" });
+    c.bar.innerHTML = segs.map(x => `<i title="${esc(x.n)} ${Math.round(x.m)} MB" style="width:${x.m / total * 100}%;background:${x.c}"></i>`).join("");
+    c.legend.innerHTML = segs.filter(x => x.m >= 1).map(x => `<span style="--c:${x.c}">${esc(x.n)} ${(x.m / 1024).toFixed(1)} GB</span>`).join("");
+    c.mem.textContent = `VRAM ${(used / 1024).toFixed(1)} / ${(total / 1024).toFixed(1)} GB (${Math.round(used / total * 100)}%)`;
+
+    // PCIe link line
+    const lk = g.t["pcie.link"];
+    if (lk) {
+      const narrow = v["pcie.width"] < v["pcie.maxwidth"], slow = v["pcie.gen"] < v["pcie.maxgen"], busy = Math.max(v["pcie.rx"] || 0, v["pcie.tx"] || 0) > 1000 || (v["load.gpu"] || 0) > 30;
+      c.link.className = "link" + (narrow || (slow && busy) ? " warn" : "");
+      c.link.textContent = `PCIe ${lk.split("  ")[0]}` + (narrow ? ` ⚠ card supports x${v["pcie.maxwidth"]}` : slow ? (busy ? ` ⚠ card supports Gen${v["pcie.maxgen"]}` : " (idle downshift)") : "") +
+        `   ↓ ${Math.round(v["pcie.rx"] || 0)}  ↑ ${Math.round(v["pcie.tx"] || 0)} of ${((v["pcie.cap"] || 0) / 1000).toFixed(1)} GB/s per direction`;
+    }
+
+    // sensor rows (created the first time a key shows up, in definition order)
+    for (const d of s.defs) {
+      if (!(d.key in v)) continue;
+      let r = c.rows[d.key];
+      if (!r) {
+        const div = document.createElement("div"); div.className = "row";
+        div.innerHTML = `<span class="lbl">${esc(d.label)}</span><b></b><canvas></canvas>`;
+        c.sensors.appendChild(div);
+        r = c.rows[d.key] = { val: div.querySelector("b"), cv: div.querySelector("canvas") };
+      }
+      r.val.textContent = fmt(v[d.key], d.fmt) + (d.unit ? " " + d.unit : "");
+      const arr = hist[g.index + "|" + d.key];
+      const max = d.fixedMax > 0 ? d.fixedMax : (d.maxKey && v[d.maxKey] > 0 ? v[d.maxKey] : Math.max(1, ...arr) * 1.15);
+      sparkline(r.cv, arr, max);
+    }
+    for (const t of s.textDefs) {
+      const val = g.t[t.key]; if (val == null || t.key === "pcie.link") continue;
+      let r = c.txt[t.key];
+      if (!r) { const div = document.createElement("div"); div.className = "txt"; div.innerHTML = `<span class="lbl" style="color:var(--mute)">${esc(t.label)}</span><span></span>`; c.sensors.appendChild(div); r = c.txt[t.key] = div.lastChild; }
+      r.textContent = val; r.className = t.key === "throttle" && !val.startsWith("None") ? "warn" : "";
+    }
+    renderProcs(g, c);
+  }
+}
+
+async function tick() {
+  try { const r = await fetch("api/snapshot", { cache: "no-store" }); render(await r.json()); }
+  catch (e) { document.getElementById("status").textContent = "disconnected: " + e.message; }
+}
+tick(); setInterval(tick, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>gpumon</AssemblyName>
+    <RootNamespace>GpuMon</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>1.0.0</Version>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- NVML access and sensor reading are shared with the Windows app -->
+    <Compile Include="..\src\Model.cs" Link="shared\Model.cs" />
+    <Compile Include="..\src\Native\Nvml.cs" Link="shared\Nvml.cs" />
+    <Compile Include="..\src\NvmlReader.cs" Link="shared\NvmlReader.cs" />
+  </ItemGroup>
+</Project>
