@@ -15,7 +15,7 @@ Shows: VRAM and shared-memory use per process, engine load per process, sensors 
 traffic, a VRAM-by-process history chart, and a Displays tab (arrangement, refresh rate measured from the vertical
 blank, timings, EDID, colour depth). Crash reports are written to `Documents\GpuMon Logs`.
 
-## container\ (Linux hosts)
+## container (Linux hosts)
 
 A Docker/Podman image with a web dashboard and a Prometheus endpoint. Needs the NVIDIA driver and the
 NVIDIA Container Toolkit on the host at run time (not to build the image). See `container\README.md`.
